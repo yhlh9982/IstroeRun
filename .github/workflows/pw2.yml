@@ -14,6 +14,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # 赋予发布 Release 的写权限
 
     steps:
       - name: Checkout repository
@@ -22,8 +24,20 @@ jobs:
       - name: Fetch latest release tag from Passwall2
         id: fetch_latest_tag
         run: |
-          latest_tag=$(curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest | jq -r '.tag_name')
+          # 不使用 Token 访问公共 API，加上 -L 跟随重定向
+          API_URL="https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest"
+          RESPONSE=$(curl -sL "$API_URL")
+          
+          latest_tag=$(echo "$RESPONSE" | jq -r '.tag_name')
+          
+          if [ "$latest_tag" == "null" ] || [ -z "$latest_tag" ]; then
+            echo "Error: Failed to fetch latest tag."
+            echo "API Response: $RESPONSE"
+            exit 1
+          fi
+          
           echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
+          echo "Fetched tag: $latest_tag"
 
       - name: Clone makeself repository
         run: git clone https://github.com/megastep/makeself.git
@@ -32,31 +46,36 @@ jobs:
         run: |
           mkdir -p downloads
           cd downloads
+          
+          echo "Fetching Release JSON..."
+          RELEASE_JSON=$(curl -sL "https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest")
+          
+          # 提取下载链接
+          URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_x86_64\\.zip")) | .browser_download_url')
+          URL_AARCH64=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_aarch64_cortex-a53\\.zip")) | .browser_download_url')
+          # 获取所有匹配 luci-*-passwall2*.ipk 的文件 (主程序+语言包)
+          URL_LUCI=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("luci-.*-passwall2.*\\.ipk")) | .browser_download_url')
 
-          # 下载 x86_64 ipk
-          curl -L -O $(
-            curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest \
-            | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_x86_64\\.zip")) | .browser_download_url'
-          )
+          # 检查必要文件是否存在
+          if [ -z "$URL_X86" ] || [ -z "$URL_AARCH64" ]; then
+            echo "Error: Failed to extract download URLs."
+            exit 1
+          fi
 
-          # 下载 aarch64 ipk
-          curl -L -O $(
-            curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest \
-            | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_aarch64_cortex-a53\\.zip")) | .browser_download_url'
-          )
-
-
-          # 下载luci app ipk
-          curl -L -O $(
-            curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest \
-            | jq -r '.assets[] | select(.name | test("luci-.*-passwall2.*\\.ipk")) | .browser_download_url' | head -1
-          )
-          # 下载luci语言包ipk
-          curl -L -O $(
-            curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest \
-            | jq -r '.assets[] | select(.name | test("luci-.*-passwall2.*\\.ipk")) | .browser_download_url' | tail -1
-          )
-
+          echo "Downloading X86 packages..."
+          curl -LO "$URL_X86"
+          
+          echo "Downloading Aarch64 packages..."
+          curl -LO "$URL_AARCH64"
+          
+          echo "Downloading LuCI packages..."
+          for url in $URL_LUCI; do
+            if [ ! -z "$url" ] && [ "$url" != "null" ]; then
+                curl -LO "$url"
+            fi
+          done
+          
+          ls -lh
 
       - name: Organize files for x86_64
         run: |
@@ -65,82 +84,4 @@ jobs:
           rm downloads/passwall_packages_ipk_x86_64.zip
           cp downloads/luci-*.ipk passwall_x86_64/main/
 
-      - name: Organize files for aarch64_cortex-a53
-        run: |
-          mkdir -p passwall_aarch64/depends passwall_aarch64/main
-          unzip downloads/passwall_packages_ipk_aarch64_cortex-a53.zip -d passwall_aarch64/depends
-          rm downloads/passwall_packages_ipk_aarch64_cortex-a53.zip
-          cp downloads/luci-*.ipk passwall_aarch64/main/
-
-      - name: Create install.sh scripts
-        run: |
-          cat <<EOF > passwall_x86_64/install.sh
-          #!/bin/sh
-          opkg update
-          if [ $? -ne 0 ]; then
-              echo "update failed。"
-              exit 1
-          fi
-          opkg install iptables-mod-tproxy
-          opkg install iptables-mod-socket
-          opkg install iptables-mod-iprange
-          opkg install iptables-mod-conntrack-extra
-          opkg install depends/*.ipk
-          opkg install main/*.ipk
-          EOF
-          chmod +x passwall_x86_64/install.sh
-          cp passwall_x86_64/install.sh passwall_aarch64/install.sh
-
-      - name: Move passwall2 directories to makeself
-        run: |
-          mv passwall_x86_64 makeself/
-          mv passwall_aarch64 makeself/
-
-      - name: Create self-extracting packages
-        run: |
-          cd makeself
-          ./makeself.sh passwall_x86_64/ passwall2_x86_64_${{ env.LATEST_TAG }}.run "by github action" ./install.sh
-          ./makeself.sh passwall_aarch64/ passwall2_aarch64_a53_${{ env.LATEST_TAG }}.run "by github action" ./install.sh
-
-      - name: Check file sizes
-        run: |
-          ls -lh makeself/passwall2*.run
-
-      - name: Preparing release name
-        run: |
-          release_name=$(TZ="Asia/Shanghai" date +'%Y-%m-%d %H:%M Build')
-          echo "RELEASE_NAME=$release_name" >> $GITHUB_ENV
-
-      - name: Fetch latest release details
-        id: fetch_release_details
-        run: |
-          extra_content="![Github](https://img.shields.io/badge/Passwall2.run-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.cn/archives/1) ![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/wukongdaily/RunFilesBuilder/${{ env.LATEST_TAG }}/total?style=for-the-badge&labelColor=black&color=%2325c2a0)"
-          release_notes=$(curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall2/releases/latest | jq -r '.body')
-          if [ -z "$release_notes" ]; then
-            release_notes="No release notes available."
-          fi
-          echo -e "$extra_content\n\n$release_notes" > release_notes.md
-
-      - name: Print release notes
-        run: |
-          cat release_notes.md
-
-      - name: Generate new tag & release
-        uses: softprops/action-gh-release@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.LATEST_TAG }}
-          target_commitish: ${{ github.ref_name }}
-          prerelease: false
-          body_path: release_notes.md
-
-      - name: Upload run files as release assets
-        uses: softprops/action-gh-release@v2.1.0
-        with:
-          tag_name: ${{ env.LATEST_TAG }}
-          name: "PassWall2-${{ env.LATEST_TAG }}"
-          files: makeself/passwall2*.run
-          token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Organize files
