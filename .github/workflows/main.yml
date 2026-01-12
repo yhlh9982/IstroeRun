@@ -23,10 +23,10 @@ jobs:
       
       - name: Fetch latest release tag from Passwall
         id: fetch_latest_tag
-        # 注意：此处不使用 Token 访问公共仓库 API，避免权限错误
+        # 注意：此处不使用 Token 访问公共仓库 API，但加上 -L 以跟随重定向
         run: |
           API_URL="https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest"
-          RESPONSE=$(curl -s "$API_URL")
+          RESPONSE=$(curl -sL "$API_URL")
           
           latest_tag=$(echo "$RESPONSE" | jq -r '.tag_name')
           
@@ -45,14 +45,14 @@ jobs:
         run: git clone https://github.com/megastep/makeself.git
 
       - name: Download latest Passwall files
-        # 注意：此处不使用 Token
+        # 注意：curl 加上 -L 参数
         run: |
           mkdir -p downloads
           cd downloads
           
           echo "Fetching Release JSON..."
           # 获取 Release 信息
-          RELEASE_JSON=$(curl -s "https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest")
+          RELEASE_JSON=$(curl -sL "https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest")
           
           # 使用 jq 提取下载链接
           URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("passwall_packages_ipk_x86_64.zip")) | .browser_download_url')
@@ -141,11 +141,11 @@ jobs:
 
       - name: Fetch latest release details
         id: fetch_release_details
-        # 此处也不使用 Token
+        # 此处也不使用 Token，但加上 -L
         run: |
           extra_content="![Github](https://img.shields.io/badge/Passwall.run-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.cn/archives/1) ![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/wukongdaily/RunFilesBuilder/${{ env.LATEST_TAG }}/total?style=for-the-badge&labelColor=black&color=%2325c2a0)"
           
-          release_notes=$(curl -s https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest | jq -r '.body')
+          release_notes=$(curl -sL https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest | jq -r '.body')
           
           if [ -z "$release_notes" ] || [ "$release_notes" == "null" ]; then
             release_notes="No release notes available."
@@ -159,4 +159,4 @@ jobs:
           name: "PassWall-${{ env.LATEST_TAG }}"
           body_path: release_notes.md
           files: makeself/passwall_*.run
-          token: ${{ secrets.GITHUB_TOKEN }} # 这里必须使用 Token 才能发布到你自己的仓库
+          token: ${{ secrets.GITHUB_TOKEN }}
