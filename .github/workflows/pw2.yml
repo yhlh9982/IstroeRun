@@ -49,34 +49,15 @@ jobs:
           echo "Fetching Release JSON..."
           RELEASE_JSON=$(curl -sL "https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall2/releases/latest")
           
-          # --- 调试开始：打印所有文件名 ---
-          echo "Available files in release:"
-          echo "$RELEASE_JSON" | jq -r '.assets[].name'
-          # --- 调试结束 ---
-
-          # 提取下载链接
-          URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_x86_64\\.zip")) | .browser_download_url')
-          URL_AARCH64=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_aarch64_cortex-a53\\.zip")) | .browser_download_url')
           # 获取所有匹配 luci-*-passwall2*.ipk 的文件 (主程序+语言包)
           URL_LUCI=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("luci-.*-passwall2.*\\.ipk")) | .browser_download_url')
 
-          echo "Extracted X86 URL: $URL_X86"
-          echo "Extracted AARCH64 URL: $URL_AARCH64"
-
-          # 检查必要文件是否存在
-          if [ -z "$URL_X86" ] || [ -z "$URL_AARCH64" ]; then
-            echo "Error: Failed to extract download URLs."
-            echo "Full JSON Response for debugging:"
-            echo "$RELEASE_JSON"
+          # 检查是否有文件
+          if [ -z "$URL_LUCI" ]; then
+            echo "Error: Failed to extract any download URLs."
             exit 1
           fi
 
-          echo "Downloading X86 packages..."
-          curl -LO "$URL_X86"
-          
-          echo "Downloading Aarch64 packages..."
-          curl -LO "$URL_AARCH64"
-          
           echo "Downloading LuCI packages..."
           for url in $URL_LUCI; do
             if [ ! -z "$url" ] && [ "$url" != "null" ]; then
@@ -86,52 +67,34 @@ jobs:
           
           ls -lh
 
-      - name: Organize files for x86_64
+      - name: Organize files (LuCI Only)
         run: |
-          mkdir -p passwall_x86_64/depends passwall_x86_64/main
-          unzip downloads/passwall_packages_ipk_x86_64.zip -d passwall_x86_64/depends
-          rm downloads/passwall_packages_ipk_x86_64.zip
-          cp downloads/luci-*.ipk passwall_x86_64/main/
-
-      - name: Organize files for aarch64_cortex-a53
-        run: |
-          mkdir -p passwall_aarch64/depends passwall_aarch64/main
-          unzip downloads/passwall_packages_ipk_aarch64_cortex-a53.zip -d passwall_aarch64/depends
-          rm downloads/passwall_packages_ipk_aarch64_cortex-a53.zip
-          cp downloads/luci-*.ipk passwall_aarch64/main/
+          # 因为没有核心包，这里只打包 LuCI ipk
+          mkdir -p passwall_luci/main
+          cp downloads/luci-*.ipk passwall_luci/main/
 
       - name: Create install.sh scripts
         run: |
-          cat <<EOF > passwall_x86_64/install.sh
+          cat <<EOF > passwall_luci/install.sh
           #!/bin/sh
-          echo "Installing Passwall2..."
-          opkg update
-          # 安装基础依赖 (忽略错误)
-          opkg install iptables-mod-tproxy iptables-mod-socket iptables-mod-iprange iptables-mod-conntrack-extra || true
-          # 安装依赖包
-          if ls depends/*.ipk 1> /dev/null 2>&1; then
-            opkg install depends/*.ipk
-          fi
-          # 安装主程序
+          echo "Installing Passwall2 LuCI..."
+          # 安装主程序 (语言包通常会自动作为依赖安装，或者通过通配符一起安装)
           if ls main/*.ipk 1> /dev/null 2>&1; then
             opkg install main/*.ipk
           fi
-          echo "Installation Complete."
+          echo "Installation Complete. Note: Core packages (xray/sing-box) are NOT included in this runfile."
           EOF
           
-          chmod +x passwall_x86_64/install.sh
-          cp passwall_x86_64/install.sh passwall_aarch64/install.sh
+          chmod +x passwall_luci/install.sh
 
-      - name: Move passwall2 directories to makeself
+      - name: Move directory to makeself
         run: |
-          mv passwall_x86_64 makeself/
-          mv passwall_aarch64 makeself/
+          mv passwall_luci makeself/
 
-      - name: Create self-extracting packages
+      - name: Create self-extracting package
         run: |
           cd makeself
-          ./makeself.sh passwall_x86_64/ passwall2_x86_64_${{ env.LATEST_TAG }}.run "Passwall2 x86_64 Installer" ./install.sh
-          ./makeself.sh passwall_aarch64/ passwall2_aarch64_a53_${{ env.LATEST_TAG }}.run "Passwall2 aarch64 Installer" ./install.sh
+          ./makeself.sh passwall_luci/ passwall2_luci_${{ env.LATEST_TAG }}.run "Passwall2 LuCI Installer" ./install.sh
 
       - name: Check file sizes
         run: |
