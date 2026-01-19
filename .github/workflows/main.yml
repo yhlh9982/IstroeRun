@@ -23,9 +23,10 @@ jobs:
       
       - name: Fetch latest release tag from Passwall
         id: fetch_latest_tag
-        # 注意：此处不使用 Token 访问公共仓库 API，但加上 -L 以跟随重定向
         run: |
-          API_URL="https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest"
+          # 修改仓库地址为 Openwrt-Passwall/openwrt-passwall
+          # 加上 -L 参数以跟随重定向
+          API_URL="https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest"
           RESPONSE=$(curl -sL "$API_URL")
           
           latest_tag=$(echo "$RESPONSE" | jq -r '.tag_name')
@@ -45,14 +46,13 @@ jobs:
         run: git clone https://github.com/megastep/makeself.git
 
       - name: Download latest Passwall files
-        # 注意：curl 加上 -L 参数
         run: |
           mkdir -p downloads
           cd downloads
           
           echo "Fetching Release JSON..."
-          # 获取 Release 信息
-          RELEASE_JSON=$(curl -sL "https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest")
+          # 修改仓库地址为 Openwrt-Passwall/openwrt-passwall
+          RELEASE_JSON=$(curl -sL "https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest")
           
           # 使用 jq 提取下载链接
           URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("passwall_packages_ipk_x86_64.zip")) | .browser_download_url')
@@ -60,21 +60,26 @@ jobs:
           # 获取所有匹配 luci-*-passwall*.ipk 的文件 (通常有2-3个)
           URL_LUCI=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("luci-.*-passwall.*\\.ipk")) | .browser_download_url')
 
-          # 检查链接是否存在
-          if [ -z "$URL_X86" ] || [ -z "$URL_AARCH64" ] || [ "$URL_X86" == "null" ]; then
-            echo "Error: Failed to extract download URLs. API response might be invalid."
+          # 检查必要文件是否存在
+          # 注意：如果是 Passwall 1，可能也没有核心 zip 包，需要根据实际 Release 内容调整检查逻辑
+          # 这里假设结构与之前一致，如果也是 404 或者结构变了，可能需要去掉核心包下载
+          if [ -z "$URL_LUCI" ]; then
+            echo "Error: Failed to extract download URLs."
             echo "Debug JSON: $RELEASE_JSON"
             exit 1
           fi
 
-          echo "Downloading X86 package..."
-          curl -LO "$URL_X86"
+          if [ ! -z "$URL_X86" ] && [ "$URL_X86" != "null" ]; then
+             echo "Downloading X86 packages..."
+             curl -LO "$URL_X86"
+          fi
           
-          echo "Downloading Aarch64 package..."
-          curl -LO "$URL_AARCH64"
+          if [ ! -z "$URL_AARCH64" ] && [ "$URL_AARCH64" != "null" ]; then
+             echo "Downloading Aarch64 packages..."
+             curl -LO "$URL_AARCH64"
+          fi
           
           echo "Downloading LuCI packages..."
-          # 处理多行 URL
           for url in $URL_LUCI; do
             if [ ! -z "$url" ] && [ "$url" != "null" ]; then
                 curl -LO "$url"
@@ -83,18 +88,25 @@ jobs:
           
           ls -lh
 
-      - name: Organize files for x86_64
+      - name: Organize files
         run: |
+          # 动态处理：如果有 zip 包就解压，没有就只打包 ipk
+          # 分别处理 x86 和 aarch64 以保持兼容性
+          
+          # --- x86_64 处理 ---
           mkdir -p passwall_x86_64/depends passwall_x86_64/main
-          unzip downloads/passwall_packages_ipk_x86_64.zip -d passwall_x86_64/depends
-          rm downloads/passwall_packages_ipk_x86_64.zip
+          if ls downloads/*x86_64.zip 1> /dev/null 2>&1; then
+            unzip downloads/*x86_64.zip -d passwall_x86_64/depends
+            rm downloads/*x86_64.zip
+          fi
           cp downloads/luci-*.ipk passwall_x86_64/main/
 
-      - name: Organize files for aarch64_cortex-a53
-        run: |
+          # --- aarch64 处理 ---
           mkdir -p passwall_aarch64/depends passwall_aarch64/main
-          unzip downloads/passwall_packages_ipk_aarch64_cortex-a53.zip -d passwall_aarch64/depends
-          rm downloads/passwall_packages_ipk_aarch64_cortex-a53.zip
+          if ls downloads/*aarch64*.zip 1> /dev/null 2>&1; then
+            unzip downloads/*aarch64*.zip -d passwall_aarch64/depends
+            rm downloads/*aarch64*.zip
+          fi
           cp downloads/luci-*.ipk passwall_aarch64/main/
 
       - name: Create install.sh scripts
@@ -103,9 +115,9 @@ jobs:
           #!/bin/sh
           echo "Installing Passwall..."
           opkg update
-          # 安装基础依赖 (忽略错误，因为有些可能已安装)
+          # 安装基础依赖
           opkg install iptables-mod-tproxy iptables-mod-socket iptables-mod-iprange iptables-mod-conntrack-extra || true
-          # 安装下载的依赖包
+          # 安装依赖包
           if ls depends/*.ipk 1> /dev/null 2>&1; then
             opkg install depends/*.ipk
           fi
@@ -141,11 +153,11 @@ jobs:
 
       - name: Fetch latest release details
         id: fetch_release_details
-        # 此处也不使用 Token，但加上 -L
         run: |
           extra_content="![Github](https://img.shields.io/badge/Passwall.run-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.cn/archives/1) ![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/wukongdaily/RunFilesBuilder/${{ env.LATEST_TAG }}/total?style=for-the-badge&labelColor=black&color=%2325c2a0)"
           
-          release_notes=$(curl -sL https://api.github.com/repos/xiaorouji/openwrt-passwall/releases/latest | jq -r '.body')
+          # 修改仓库地址
+          release_notes=$(curl -sL https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest | jq -r '.body')
           
           if [ -z "$release_notes" ] || [ "$release_notes" == "null" ]; then
             release_notes="No release notes available."
