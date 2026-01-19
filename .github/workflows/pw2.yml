@@ -24,8 +24,6 @@ jobs:
       - name: Fetch latest release tag from Passwall2
         id: fetch_latest_tag
         run: |
-          # 不使用 Token 访问公共 API，加上 -L 跟随重定向
-          # 修改仓库地址为 Openwrt-Passwall/openwrt-passwall2
           API_URL="https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall2/releases/latest"
           RESPONSE=$(curl -sL "$API_URL")
           
@@ -49,18 +47,27 @@ jobs:
           cd downloads
           
           echo "Fetching Release JSON..."
-          # 修改仓库地址为 Openwrt-Passwall/openwrt-passwall2
           RELEASE_JSON=$(curl -sL "https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall2/releases/latest")
           
+          # --- 调试开始：打印所有文件名 ---
+          echo "Available files in release:"
+          echo "$RELEASE_JSON" | jq -r '.assets[].name'
+          # --- 调试结束 ---
+
           # 提取下载链接
           URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_x86_64\\.zip")) | .browser_download_url')
           URL_AARCH64=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("passwall_packages_ipk_aarch64_cortex-a53\\.zip")) | .browser_download_url')
           # 获取所有匹配 luci-*-passwall2*.ipk 的文件 (主程序+语言包)
           URL_LUCI=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("luci-.*-passwall2.*\\.ipk")) | .browser_download_url')
 
+          echo "Extracted X86 URL: $URL_X86"
+          echo "Extracted AARCH64 URL: $URL_AARCH64"
+
           # 检查必要文件是否存在
           if [ -z "$URL_X86" ] || [ -z "$URL_AARCH64" ]; then
             echo "Error: Failed to extract download URLs."
+            echo "Full JSON Response for debugging:"
+            echo "$RELEASE_JSON"
             exit 1
           fi
 
@@ -139,9 +146,10 @@ jobs:
         id: fetch_release_details
         run: |
           extra_content="![Github](https://img.shields.io/badge/Passwall2.run-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.cn/archives/1) ![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/wukongdaily/RunFilesBuilder/${{ env.LATEST_TAG }}/total?style=for-the-badge&labelColor=black&color=%2325c2a0)"
-          # 修改仓库地址为 Openwrt-Passwall/openwrt-passwall2
+          
           release_notes=$(curl -sL https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall2/releases/latest | jq -r '.body')
-          if [ -z "$release_notes" ]; then
+          
+          if [ -z "$release_notes" ] || [ "$release_notes" == "null" ]; then
             release_notes="No release notes available."
           fi
           echo -e "$extra_content\n\n$release_notes" > release_notes.md
