@@ -6,7 +6,7 @@
 # Blog: wkdaily.cpolar.cn
 #=================================================
 
-name: NEW Make Passwall2 run files
+name: Make Passwall2 run files
 
 on:
   workflow_dispatch:
