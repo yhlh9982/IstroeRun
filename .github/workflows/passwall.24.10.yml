@@ -1,17 +1,17 @@
 #=================================================
 # https://github.com/wukongdaily/RunFilesBuilder
-# Description: Repack IPKs from SourceForge to .run installer
+# Description: Repack IPKs from SourceForge (Multi-folder) to .run installer
 # Lisence: MIT
 #=================================================
 
-name: passwall 24.10
+name: Repack SourceForge to .run
 
 on:
   workflow_dispatch:
     inputs:
-      # 更新为 24.10 的地址
+      # 这里填入包含那三个文件夹的【父目录】链接
       repo_url:
-        description: 'SourceForge Repo URL'
+        description: 'SourceForge Parent URL'
         required: true
         default: 'https://sourceforge.net/projects/openwrt-passwall-build/files/releases/packages-24.10/aarch64_cortex-a53/'
       
@@ -38,47 +38,65 @@ jobs:
 
       - name: Download IPKs from SourceForge
         run: |
-          # 1. 转换 URL 格式
-          # 输入: https://sourceforge.net/projects/NAME/files/PATH/
-          # 目标: https://downloads.sourceforge.net/project/NAME/PATH/
-          
+          # 1. 处理输入 URL
           INPUT_URL="${{ inputs.repo_url }}"
-          # 移除末尾斜杠
-          INPUT_URL=${INPUT_URL%/}
+          INPUT_URL=${INPUT_URL%/} # 去掉末尾斜杠
           
-          # 提取关键部分：替换 'projects' 为 'project'，并移除 '/files'
-          DOWNLOAD_BASE=$(echo "$INPUT_URL" | sed 's/sourceforge.net\/projects/downloads.sourceforge.net\/project/' | sed 's/\/files\//\//')
+          # 转换网页链接为真实下载链接
+          # 比如: https://sourceforge.net/projects/xxx/files/yyy -> https://downloads.sourceforge.net/project/xxx/yyy
+          DOWNLOAD_BASE_ROOT=$(echo "$INPUT_URL" | sed 's/sourceforge.net\/projects/downloads.sourceforge.net\/project/' | sed 's/\/files\//\//')
           
-          echo "Base Download URL: $DOWNLOAD_BASE"
+          echo "Root Download URL: $DOWNLOAD_BASE_ROOT"
           
           mkdir -p package_root
           cd package_root
           
-          # 2. 下载 Packages 索引文件
-          echo "Downloading Packages list..."
-          wget -q "${DOWNLOAD_BASE}/Packages.gz" -O Packages.gz
-          gunzip Packages.gz
+          # 2. 定义必须遍历的子目录 (正是你提供的这三个)
+          SUB_DIRS="passwall_packages passwall_luci passwall2"
           
-          # 3. 解析文件名并下载
-          echo "Parsing and downloading IPKs..."
-          # 从 Packages 文件中提取 Filename 字段
-          grep "Filename:" Packages | awk '{print $2}' > filelist.txt
+          echo "Starting batch download..."
           
-          count=0
-          total=$(wc -l < filelist.txt)
+          for dir in $SUB_DIRS; do
+              echo "------------------------------------------------"
+              echo "📂 Processing Directory: $dir"
+              
+              # 拼接子目录地址
+              CURRENT_BASE="${DOWNLOAD_BASE_ROOT}/${dir}"
+              INDEX_URL="${CURRENT_BASE}/Packages.gz"
+              
+              # 下载索引
+              if wget -q "$INDEX_URL" -O "Packages_${dir}.gz"; then
+                  echo "✅ Index found for $dir"
+                  gunzip -f "Packages_${dir}.gz"
+                  
+                  # 提取文件名
+                  grep "Filename:" "Packages_${dir}" | awk '{print $2}' > "filelist_${dir}.txt"
+                  
+                  # 批量下载该目录下的 ipk
+                  count=0
+                  total=$(wc -l < "filelist_${dir}.txt")
+                  while read filename; do
+                      count=$((count+1))
+                      # 这里的 filename 已经是 ipk 文件名了
+                      echo "   ⬇️ [$count/$total] $filename"
+                      wget -q "${CURRENT_BASE}/${filename}"
+                  done < "filelist_${dir}.txt"
+                  
+                  # 清理临时文件
+                  rm "Packages_${dir}" "filelist_${dir}.txt"
+              else
+                  echo "⚠️  Warning: Could not download index for $dir (Skipping)"
+              fi
+          done
           
-          while read filename; do
-            count=$((count+1))
-            echo "[$count/$total] Downloading $filename..."
-            # 使用 wget 下载，自动处理 SourceForge 的重定向
-            wget -q "${DOWNLOAD_BASE}/${filename}"
-          done < filelist.txt
+          echo "------------------------------------------------"
+          FILE_COUNT=$(ls -1 *.ipk 2>/dev/null | wc -l)
+          echo "🎉 Download complete. Total IPKs: $FILE_COUNT"
           
-          # 清理索引文件
-          rm Packages filelist.txt
-          
-          echo "Download complete. Total files:"
-          ls -1 | wc -l
+          if [ "$FILE_COUNT" -eq 0 ]; then
+              echo "❌ Error: No packages downloaded! Please check the URL structure."
+              exit 1
+          fi
 
       - name: Create Installation Script
         run: |
@@ -92,15 +110,21 @@ jobs:
           
           echo "Installing packages..."
           # 强制安装所有 ipk
-          # --force-depends: 忽略内核版本差异 (这在跨版本安装时很重要)
-          # --force-overwrite: 覆盖系统中已有的文件
+          # --force-depends: 忽略内核版本差异
+          # --force-overwrite: 覆盖旧文件
           opkg install *.ipk --force-depends --force-overwrite
           
           if [ $? -eq 0 ]; then
-              echo "✅ Success! Please refresh LuCI."
+              echo "-----------------------------------------------"
+              echo "✅ Success! All packages installed."
+              echo "   Please refresh your LuCI page."
+              echo "-----------------------------------------------"
               # rm -f *.ipk
           else
-              echo "❌ Some errors occurred, but forcing installation."
+              echo "-----------------------------------------------"
+              echo "❌ Installation finished with errors."
+              echo "   See above for details."
+              echo "-----------------------------------------------"
           fi
           EOF
           
@@ -110,8 +134,7 @@ jobs:
         run: |
           VERSION=$(date +'%Y.%m.%d')
           ARCH="${{ inputs.arch_name }}"
-          # 文件名标记为 24.10 以示区别
-          FILENAME="Passwall_24.10_Repack_${ARCH}_${VERSION}.run"
+          FILENAME="Passwall_SF_Repack_${ARCH}_${VERSION}.run"
           
           ./makeself/makeself.sh package_root/ $FILENAME "Passwall Installer ($ARCH)" ./install.sh
           
@@ -121,16 +144,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: Repack-${{ env.OUTPUT_FILENAME }}
-          name: Passwall 24.10 Repack ${{ env.OUTPUT_FILENAME }}
+          name: Passwall SourceForge Repack ${{ env.OUTPUT_FILENAME }}
           files: ${{ env.OUTPUT_FILENAME }}
           body: |
-            ### SourceForge 转包自动构建 (OpenWrt 24.10)
+            ### 📦 SourceForge 转包自动构建
             
             **源地址：** ${{ inputs.repo_url }}
             **架构：** ${{ inputs.arch_name }}
             
-            **包含组件：**
-            Passwall 主程序及其所有依赖（Xray, Sing-box, Hysteria 等）。
+            **包含组件源：**
+            - passwall_packages (核心组件)
+            - passwall_luci (一代界面)
+            - passwall2 (二代组件)
             
             **安装方法：**
             上传到 `/tmp`，执行 `sh ${{ env.OUTPUT_FILENAME }}`
