@@ -4,7 +4,7 @@
 # Lisence: MIT
 #=================================================
 
-name: Repack SourceForge to .run
+name: passwall.24.10
 
 on:
   workflow_dispatch:
