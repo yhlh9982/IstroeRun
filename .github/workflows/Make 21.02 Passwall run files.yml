@@ -1,0 +1,166 @@
+#=================================================
+# https://github.com/wukongdaily/RunFilesBuilder
+# Description: Repack IPKs from SourceForge (Multi-folder) to .run installer
+# Lisence: MIT
+#=================================================
+
+name: Make 21.02 Passwall run files
+
+on:
+  workflow_dispatch:
+    inputs:
+      # 这里填入包含那三个文件夹的【父目录】链接
+      repo_url:
+        description: 'SourceForge Parent URL'
+        required: true
+        default: 'https://sourceforge.net/projects/openwrt-passwall-build/files/releases/packages-21.02/aarch64_cortex-a53/'
+      
+      arch_name:
+        description: 'Architecture Name (for filename)'
+        required: true
+        default: 'aarch64_cortex-a53'
+
+jobs:
+  repack:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y wget unzip
+
+      - name: Clone makeself
+        run: git clone https://github.com/megastep/makeself.git
+
+      - name: Download IPKs from SourceForge
+        run: |
+          # 1. 处理输入 URL
+          INPUT_URL="${{ inputs.repo_url }}"
+          INPUT_URL=${INPUT_URL%/} # 去掉末尾斜杠
+          
+          # 转换网页链接为真实下载链接
+          DOWNLOAD_BASE_ROOT=$(echo "$INPUT_URL" | sed 's/sourceforge.net\/projects/downloads.sourceforge.net\/project/' | sed 's/\/files\//\//')
+          
+          echo "Root Download URL: $DOWNLOAD_BASE_ROOT"
+          
+          mkdir -p package_root
+          cd package_root
+          
+          # 2. 定义必须遍历的子目录
+          SUB_DIRS="passwall_packages passwall_luci passwall2"
+          
+          echo "Starting batch download..."
+          
+          for dir in $SUB_DIRS; do
+              echo "------------------------------------------------"
+              echo "📂 Processing Directory: $dir"
+              
+              # 拼接子目录地址
+              CURRENT_BASE="${DOWNLOAD_BASE_ROOT}/${dir}"
+              INDEX_URL="${CURRENT_BASE}/Packages.gz"
+              
+              # 下载索引
+              if wget -q "$INDEX_URL" -O "Packages_${dir}.gz"; then
+                  echo "✅ Index found for $dir"
+                  gunzip -f "Packages_${dir}.gz"
+                  
+                  # 提取文件名
+                  grep "Filename:" "Packages_${dir}" | awk '{print $2}' > "filelist_${dir}.txt"
+                  
+                  # 批量下载该目录下的 ipk
+                  count=0
+                  total=$(wc -l < "filelist_${dir}.txt")
+                  while read filename; do
+                      count=$((count+1))
+                      echo "   ⬇️ [$count/$total] $filename"
+                      wget -q "${CURRENT_BASE}/${filename}"
+                  done < "filelist_${dir}.txt"
+                  
+                  # 清理临时文件
+                  rm "Packages_${dir}" "filelist_${dir}.txt"
+              else
+                  echo "⚠️  Warning: Could not download index for $dir (Skipping)"
+              fi
+          done
+          
+          echo "------------------------------------------------"
+          FILE_COUNT=$(ls -1 *.ipk 2>/dev/null | wc -l)
+          echo "🎉 Download complete. Total IPKs: $FILE_COUNT"
+          
+          if [ "$FILE_COUNT" -eq 0 ]; then
+              echo "❌ Error: No packages downloaded!"
+              exit 1
+          fi
+
+      - name: Create Installation Script
+        run: |
+          cat << 'EOF' > package_root/install.sh
+          #!/bin/sh
+          echo "==============================================="
+          echo "   Installing Passwall (SourceForge Repack)    "
+          echo "==============================================="
+          
+          cd "$(dirname "$0")"
+          
+          echo "Installing packages..."
+          # --force-depends: 忽略内核版本差异
+          # --force-overwrite: 覆盖旧文件
+          opkg install *.ipk --force-depends --force-overwrite
+          
+          if [ $? -eq 0 ]; then
+              echo "-----------------------------------------------"
+              echo "✅ Success! All packages installed."
+              echo "   Please refresh your LuCI page."
+              echo "-----------------------------------------------"
+          else
+              echo "-----------------------------------------------"
+              echo "❌ Installation finished with errors."
+              echo "-----------------------------------------------"
+          fi
+          EOF
+          
+          chmod +x package_root/install.sh
+
+      - name: Package into .run
+        run: |
+          # 使用精确到秒的时间戳，确保每次运行产生的 VERSION 都是唯一的
+          VERSION=$(date +'%Y.%m.%d-%H%M%S')
+          ARCH="${{ inputs.arch_name }}"
+          FILENAME="Passwall_SF_Repack_${ARCH}_${VERSION}.run"
+          
+          ./makeself/makeself.sh package_root/ $FILENAME "Passwall Installer ($ARCH)" ./install.sh
+          
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "OUTPUT_FILENAME=$FILENAME" >> $GITHUB_ENV
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 使用唯一的时间戳作为标签名，确保每次都会新开一个 Release 页面
+          tag_name: "v${{ env.VERSION }}-${{ inputs.arch_name }}"
+          name: "Passwall Repack [${{ inputs.arch_name }}] ${{ env.VERSION }}"
+          draft: false
+          prerelease: false
+          files: ${{ env.OUTPUT_FILENAME }}
+          body: |
+            ### 📦 Passwall SourceForge 自动转包构建
+            
+            - **构建架构:** ${{ inputs.arch_name }}
+            - **构建时间:** ${{ env.VERSION }}
+            - **原始地址:** ${{ inputs.repo_url }}
+            
+            **包含组件源:**
+            - `passwall_packages` (核心依赖)
+            - `passwall_luci` (主界面)
+            - `passwall2` (增强组件)
+            
+            **安装说明:**
+            1. 将下载的 `.run` 文件上传至路由器的 `/tmp` 目录。
+            2. 执行命令：`sh ${{ env.OUTPUT_FILENAME }}`
+            3. 过程中会自动调用 `opkg` 并强制覆盖依赖冲突。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
